@@ -1,7 +1,6 @@
 
 #%%
 import os, sys, warnings
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -16,8 +15,8 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 warnings.filterwarnings("ignore")
 
 # Import your own functions from that path
-from DIRAS import DIRAS
-from DIRAS_plus import diras_plus_xgb
+from src.DIRAS import DIRAS
+from src.DIRAS_plus import diras_plus_xgb
 
 # File paths in your BASE_DIR
 SPECTRA_CSV = os.path.join(BASE_DIR, "Synthetic_spectra.csv")
@@ -83,8 +82,8 @@ warnings.filterwarnings("ignore")
 ROOT = Path(__file__).resolve().parent
 sys.path.append(str(ROOT / "src"))
 
-from DIRAS import DIRAS
-from DIRAS_plus import diras_plus_xgb
+from src.DIRAS import DIRAS
+from src.DIRAS_plus import diras_plus_xgb
 
 SPECTRA_CSV = ROOT / "data" / "Synthetic_spectra.csv"
 ENCODER_PATH = ROOT / "models" / "encoder.keras"

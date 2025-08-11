@@ -1,0 +1,7 @@
+numpy
+scipy
+pandas
+matplotlib
+xgboost
+tensorflow>=2.12
+joblib
