@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+title: "DIRAS_Plus"
+authors:
+  - family-names: Aradhye
+    given-names: Prasad
+    affiliation: University of Edinburgh
+repository-code: "https://github.com/Aradhye-sys/DIRAS_Plus"
