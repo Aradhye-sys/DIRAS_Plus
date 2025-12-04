@@ -34,7 +34,7 @@ df = pd.read_csv(SPECTRA_CSV)
 wn = df.iloc[:, 0].to_numpy()  # Wavenumbers
 Y  = df.iloc[:, 1:].to_numpy()  # Spectral intensities
 
-def run_diras_all(Y, lam=1e5, ar_order=50, omega=0.01, zeta=2):
+def run_diras_all(Y, lam=1e4, ar_order=50, omega=0.01, zeta=2):
     """Apply DIRAS baseline correction to all spectra in dataset."""
     B = np.zeros_like(Y)
     for k in range(Y.shape[1]):
