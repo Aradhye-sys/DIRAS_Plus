@@ -48,7 +48,7 @@ B_diras = run_diras_all(Y)
 lam_hat, B_plus, C_plus = diras_plus_xgb(
     wavenumber=wn, spectra=Y, diras_fn=DIRAS,
     encoder_path=str(ENCODER_PATH), xgb_path=str(XGB_PATH),
-    pre_lam=1e4, ar_order=50, omega=0.01, zeta=2, pad_len=1536,)
+    pre_lam=5e3, ar_order=50, omega=0.01, zeta=2, pad_len=1536,)
 
 # Plot comparison
 j = 1 if Y.shape[1] > 2 else Y.shape[1]-1
