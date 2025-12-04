@@ -41,7 +41,7 @@ def noise_var(x, order=50, eps=1e-6):
     a = np.linalg.solve(R, r[1:])
     return r[0] - np.dot(a, r[1:])
 
-def DIRAS(y, lam=1e6, ar_order=50, omega=0.05, zeta=2, ratio=1e-6, eps=1e-6):
+def DIRAS(y, lam=5e4, ar_order=50, omega=0.05, zeta=2, ratio=1e-6, eps=1e-6):
     alpha = 0.5 if np.std(y) > 0.05 else 0.5
     n = len(y)
     
