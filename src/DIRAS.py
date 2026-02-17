@@ -56,7 +56,7 @@ def DIRAS(
     zeta=2.0,
     ratio=1e-6,
     eps=1e-6,
-    max_iter=20,
+    max_iter=10,
     w_floor=1e-2,
     w_ceiling=1.0,
 ):
