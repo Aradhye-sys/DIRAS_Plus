@@ -1,7 +1,6 @@
 """
 DIRAS (Dynamic Iterative Reweighted Autoregressive Spectral baseline correction algorithm)
 """
-
 import numpy as np
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
@@ -48,7 +47,7 @@ def ar_model_kernel_psd(residual, order=50, eps=1e-10, alpha=0.6):
     return np.clip(kernel, 0.0, 1.0)
 
 def _smoothness_penalty(z):
-   
+
     d2 = np.diff(z, n=2)
     return float(np.sum(d2 * d2))
 
@@ -64,12 +63,12 @@ def DIRAS_v7(
     w_floor=1e-6,
     w_ceiling=1.0,
     protect_scale=2.0,
-    beta=0.2,                 
-    kernel_freeze_iter=10,    
-    stop_baseline=1e-4,       
-    stop_weight=1e-3,         
-    patience=3,               
-    return_debug=False,       
+    beta=0.2,
+    kernel_freeze_iter=10,
+    stop_baseline=1e-4,
+    stop_weight=1e-3,
+    patience=3,
+    return_debug=False,
 ):
 
     y = np.asarray(y, dtype=float).ravel()
@@ -79,7 +78,7 @@ def DIRAS_v7(
         return (out, {}) if return_debug else out
 
     noise_level = float(np.std(y))
-    alpha = 0.5 if noise_level > 0.05 else 0.5  
+    alpha = 0.5 if noise_level > 0.05 else 0.5
 
     D = diags([1, -2, 1], [0, -1, -2], shape=(L, L - 2))
     D = lam * D.dot(D.transpose())
