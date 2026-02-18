@@ -71,15 +71,7 @@ def DIRAS(
     stop_weight=1e-3,
     patience=3,
 ):
-    """
-    DIRAS_v7_clean: baseline estimation via iteratively reweighted smoothing,
-    with an AR-model PSD-derived kernel to modulate weights.
 
-    Returns
-    -------
-    baseline : (L,) ndarray
-        Estimated baseline.
-    """
     y = np.asarray(y, dtype=float).ravel()
     L = len(y)
     if L < 5:
