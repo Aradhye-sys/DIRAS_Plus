@@ -5,162 +5,192 @@ import numpy as np
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
 from scipy.linalg import toeplitz
-from numba import njit
+from scipy.ndimage import gaussian_filter1d
 
-def _yule_walker_ar(x, order, eps=1e-10):
-    x = np.asarray(x, dtype=float)
-    x = x - np.mean(x)
+_EPS = 1e-12
 
+
+def _mad(x):
+    x = np.asarray(x, float).ravel()
+    m = np.median(x)
+    return 1.4826 * (np.median(np.abs(x - m)) + _EPS)
+
+
+def global_noise_gate(residual, hf_start_frac=0.25, target=0.15, p=2.0, eps=1e-12):
+    r = np.asarray(residual, float).ravel()
+    r = r - r.mean()
+    if r.size < 16:
+        return 1.0
+    spec = np.fft.rfft(r)
+    pow_ = spec.real * spec.real + spec.imag * spec.imag
+    tot = float(pow_.sum() + eps)
+    k0 = int(np.floor((1.0 - hf_start_frac) * pow_.size))
+    k0 = max(1, min(k0, pow_.size - 1))
+    hf = float(pow_[k0:].sum())
+    ratio = hf / tot
+    gate = 1.0 / (1.0 + (ratio / (target + eps)) ** p)
+    return float(np.clip(gate, 0.0, 1.0))
+
+
+def _yule_walker_ar(x, order=30, eps=1e-10):
+    x = np.asarray(x, float).ravel()
+    if x.size < order + 5:
+        order = max(5, x.size // 4)
+    x = x - x.mean()
     r = np.correlate(x, x, mode="full")[len(x) - 1 :]
     r = r[: order + 1]
-
     R = toeplitz(r[:-1]) + np.eye(order) * eps
     a = np.linalg.solve(R, r[1:])
     sigma2 = float(max(r[0] - a @ r[1:], eps))
     return a.astype(float), sigma2
 
-@njit
-def _ar_psd_numba(a, sigma2, freq, eps=1e-12):
-    nfreq = freq.shape[0]
-    p = a.shape[0]
-    psd = np.empty(nfreq, dtype=np.float64)
 
-    for i in range(nfreq):
-        re = 1.0
-        im = 0.0
-        for k in range(p):
-            ang = 2.0 * np.pi * freq[i] * (k + 1)
-            re -= a[k] * np.cos(ang)
-            im += a[k] * np.sin(ang)
-        den = re * re + im * im
-        psd[i] = sigma2 / (den + eps)
+def _ar_hf_ratio(a, sigma2, nfreq=512, eps=1e-12, hf_start_frac=0.25):
+    f = np.linspace(0, 0.5, nfreq, endpoint=True)
+    H = np.ones_like(f, dtype=np.complex128)
+    for k in range(a.size):
+        H += a[k] * np.exp(-2j * np.pi * f * (k + 1))
+    psd = sigma2 / (np.abs(H) ** 2 + eps)
+    tot = float(psd.sum() + eps)
+    k0 = int(np.floor((1.0 - hf_start_frac) * psd.size))
+    k0 = max(1, min(k0, psd.size - 1))
+    hf = float(psd[k0:].sum())
+    return hf / tot
 
-    return psd
 
-def ar_model_kernel_psd(residual, order=50, eps=1e-10, alpha=0.6):
-    x = np.asarray(residual, dtype=float)
-    x = x - np.mean(x)
+def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=(1.0, 5.0)):
+    x = np.asarray(x, float).ravel()
+    L = x.size
+    if L < 8:
+        return np.ones(L, float)
 
-    order = int(min(order, max(1, len(x) - 3)))
-    a, sigma2 = _yule_walker_ar(x, order, eps=eps)
+    d2 = np.diff(x, n=2)
+    d2 = np.pad(d2, (1, 1), mode="edge")
+    peakness = gaussian_filter1d(d2 * d2, sigma=float(max(0.5, sigma)), mode="reflect")
 
-    N = len(x)
-    freq = np.fft.fftfreq(N, d=1.0)
-    psd = _ar_psd_numba(a, sigma2, freq.astype(np.float64), eps=eps)
+    pmin, pmax = float(peakness.min()), float(peakness.max())
+    if (pmax - pmin) < 1e-15:
+        peak01 = np.zeros_like(peakness)
+    else:
+        peak01 = (peakness - pmin) / (pmax - pmin + _EPS)
 
-    energy = np.abs(np.fft.ifft(psd)).real
-    rms = np.sqrt(np.mean(energy * energy) + eps)
+    try:
+        a, sigma2 = _yule_walker_ar(x, order=order, eps=eps * 1e-2)
+        hf_ratio = _ar_hf_ratio(a, sigma2, nfreq=512, eps=eps)
+    except Exception:
+        hf_ratio = 0.15
 
-    kernel = 1.0 - alpha * np.exp(-energy / (rms + eps))
+    g0, g1 = gamma_clip
+    gamma = float(np.clip(g0 + (g1 - g0) * (hf_ratio / (0.35 + _EPS)), g0, g1))
+
+    kernel = 1.0 - (peak01 ** gamma)
+    kernel = alpha * kernel + (1.0 - alpha)
+
     return np.clip(kernel, 0.0, 1.0)
+
 
 def DIRAS(
     y,
-    lam=1e4,
-    ar_order=50,
-    omega=0.05,
-    zeta=2.0,
-    eps=1e-6,
+    lam=5e4,
     max_iter=50,
+    ar_order=50,
+    alpha_ar=0.7,
+    kernel_ema=0.12,
+    sigma_struct=6.0,
+    lam_boost=10.0,
+    gate_target=0.15,
+    gate_hf_frac=0.25,
+    omega0=0.08,
+    zeta0=2.0,
+    omega_min=0.01,
+    zeta_min=0.3,
+    omega_pow=1.0,
+    zeta_pow=0.6,
+    beta=0.25,
     w_floor=1e-6,
     w_ceiling=1.0,
-    protect_scale=2.0,
-    beta=0.2,
-    kernel_freeze_iter=10,
     stop_baseline=1e-4,
     stop_weight=1e-3,
     patience=3,
+    eps=1e-6,
 ):
-
-    y = np.asarray(y, dtype=float).ravel()
-    L = len(y)
+    y = np.asarray(y, float).ravel()
+    L = y.size
     if L < 5:
         return y.copy()
 
-    # Heuristic alpha selection (kept as in your logic)
-    noise_level = float(np.std(y))
-    alpha = 0.5 if noise_level > 0.05 else 0.5
+    D2 = diags([1, -2, 1], [0, -1, -2], shape=(L, L - 2))
+    D_base = D2 @ D2.T
 
-    # 2nd-derivative smoothing penalty
-    D = diags([1, -2, 1], [0, -1, -2], shape=(L, L - 2))
-    D = lam * D.dot(D.transpose())
+    baseline_old = np.zeros(L, float)
 
-    # Initial kernel/weights
-    kernel = ar_model_kernel_psd(y, order=ar_order, eps=eps, alpha=alpha)
-    w = np.clip(1.0 - kernel, w_floor, w_ceiling)
+    y0 = gaussian_filter1d(y, sigma=float(max(0.5, sigma_struct * 0.6)), mode="reflect")
+    kernel = ar_model_kernel_psd(y0, order=ar_order, eps=eps, alpha=alpha_ar)
+    w = np.clip(kernel, w_floor, w_ceiling)
 
-    baseline_old = np.zeros(L, dtype=float)
-    stable_count = 0
+    stable = 0
 
-    for it in range(int(max_iter)):
+    for _ in range(int(max_iter)):
+
+        gate = global_noise_gate(y - baseline_old, hf_start_frac=gate_hf_frac, target=gate_target)
+
+        lam_eff = lam * (1.0 + lam_boost * (1.0 - gate))
+
+        omega_eff = omega_min + (omega0 - omega_min) * (gate ** omega_pow)
+        zeta_eff = zeta_min + (zeta0 - zeta_min) * (gate ** zeta_pow)
+
         W = diags(w, 0)
-        Z = W + D
-        baseline = spsolve(Z, w * y)
+        baseline = spsolve(W + lam_eff * D_base, w * y)
+
         residual = y - baseline
 
-        # Update kernel early on, then freeze
-        if it < int(kernel_freeze_iter):
-            kernel = ar_model_kernel_psd(residual, order=ar_order, eps=eps, alpha=alpha)
+        res_struct = gaussian_filter1d(residual, sigma=float(max(0.5, sigma_struct)), mode="reflect")
+
+        k_new = ar_model_kernel_psd(res_struct, order=ar_order, eps=eps, alpha=alpha_ar)
+
+        kernel = np.clip((1.0 - kernel_ema) * kernel + kernel_ema * k_new, 0.0, 1.0)
 
         neg = residual < 0
         pos = ~neg
 
-        neg_vals = residual[neg]
-        if neg_vals.size > 0:
-            mean_res = float(np.mean(neg_vals))
-            std_res = float(np.std(neg_vals) + eps)
+        if np.any(neg):
+            mu_neg = np.mean(residual[neg])
+            sig_neg = np.std(residual[neg]) + eps
         else:
-            mean_res = 0.0
-            std_res = float(np.std(residual) + eps)
+            mu_neg = 0.0
+            sig_neg = _mad(residual) + eps
 
-        res_std = float(np.std(residual) + eps)
+        w_new = np.empty(L, float)
 
-        omega_dynamic = omega * (1.0 - np.exp(-np.abs(residual) / res_std))
-        zeta_dynamic = zeta * (1.0 - np.exp(-np.abs(residual) / res_std))
+        if np.any(pos):
+            d = residual[pos]
+            t = np.clip((d - (mu_neg + 2.0 * sig_neg)) / sig_neg, -60, 60)
+            logistic = 1.0 / (1.0 + np.exp(t))
+            w_new[pos] = logistic * (1.0 - omega_eff * (1.0 - kernel[pos]))
+        else:
+            w_new[pos] = 1.0
 
-        w_new = np.empty(L, dtype=float)
+        if np.any(neg):
+            d = residual[neg]
+            t = np.clip((-d) / sig_neg, -60, 60)
+            logistic = 1.0 / (1.0 + np.exp(-t))
+            w_new[neg] = zeta_eff * kernel[neg] * logistic
+        else:
+            w_new[neg] = 1.0
 
-        # Positive residuals (peaks): downweight with sigmoid + protection
-        d_plus = residual[pos]
-        exp_arg_pos = (d_plus - mean_res) / (std_res + eps)
-        exp_arg_pos = np.clip(exp_arg_pos, -60, 60)
-        sigmoid_pos = 1.0 / (1.0 + np.exp(exp_arg_pos))
-
-        protect = np.exp(- (d_plus / (protect_scale * res_std + eps)) ** 2)
-
-        w_pos = sigmoid_pos * protect * (1.0 - omega_dynamic[pos] * kernel[pos])
-        w_new[pos] = w_pos
-
-        # Negative residuals: encourage baseline to follow (but not peaks)
-        d_minus = residual[neg]
-        exp_arg_neg = -2.0 * (d_minus - (mean_res - 2.0 * std_res)) / (std_res + eps)
-        exp_arg_neg = np.clip(exp_arg_neg, -60, 60)
-        sigmoid_neg = 1.0 / (1.0 + np.exp(exp_arg_neg))
-
-        w_neg = zeta_dynamic[neg] * kernel[neg] * sigmoid_neg
-
-        # Weak-peak guard
-        weak_peak_mask = (np.abs(residual) < (0.1 * res_std)) & neg
-        if np.any(weak_peak_mask):
-            w_neg[weak_peak_mask[neg]] = 1.0
-
-        w_new[neg] = w_neg
         w_new = np.clip(w_new, w_floor, w_ceiling)
 
-        # Damped weight update
-        beta_eff = float(np.clip(beta, 0.0, 1.0))
-        w_damped = np.clip((1.0 - beta_eff) * w + beta_eff * w_new, w_floor, w_ceiling)
+        w_damped = np.clip((1.0 - beta) * w + beta * w_new, w_floor, w_ceiling)
 
-        # Early stopping (kept)
-        baseline_change = float(np.linalg.norm(baseline - baseline_old) / (np.linalg.norm(baseline) + eps))
-        weight_change = float(np.linalg.norm(w_damped - w) / (np.linalg.norm(w) + eps))
+        bchg = np.linalg.norm(baseline - baseline_old) / (np.linalg.norm(baseline) + eps)
+        wchg = np.linalg.norm(w_damped - w) / (np.linalg.norm(w) + eps)
 
-        if (baseline_change < stop_baseline) and (weight_change < stop_weight):
-            stable_count += 1
-            if stable_count >= int(patience):
+        if bchg < stop_baseline and wchg < stop_weight:
+            stable += 1
+            if stable >= patience:
                 break
         else:
-            stable_count = 0
+            stable = 0
 
         baseline_old = baseline
         w = w_damped
