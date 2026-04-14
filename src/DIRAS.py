@@ -9,12 +9,10 @@ from scipy.ndimage import gaussian_filter1d
 
 _EPS = 1e-12
 
-
 def _mad(x):
     x = np.asarray(x, float).ravel()
     m = np.median(x)
     return 1.4826 * (np.median(np.abs(x - m)) + _EPS)
-
 
 def global_noise_gate(residual, hf_start_frac=0.25, target=0.15, p=2.0, eps=1e-12):
     r = np.asarray(residual, float).ravel()
@@ -30,7 +28,6 @@ def global_noise_gate(residual, hf_start_frac=0.25, target=0.15, p=2.0, eps=1e-1
     ratio = hf / tot
     gate = 1.0 / (1.0 + (ratio / (target + eps)) ** p)
     return float(np.clip(gate, 0.0, 1.0))
-
 
 def _yule_walker_ar(x, order=30, eps=1e-10):
     x = np.asarray(x, float).ravel()
@@ -91,8 +88,8 @@ def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=
 
 def DIRAS(
     y,
-    lam=5e4,
-    max_iter=50,
+    lam=5e5,
+    max_iter=30,
     ar_order=50,
     alpha_ar=0.7,
     kernel_ema=0.12,
