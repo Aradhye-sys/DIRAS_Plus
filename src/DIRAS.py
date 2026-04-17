@@ -141,7 +141,7 @@ def _update_weights(residual, kernel, omega, zeta, mu_neg, sig_neg,
 
 def DIRAS_v2(
     y,
-    lam=5e4,
+    lam=1e5,
     use_fft_smoothing=True,
     sigma_range=(2.0, 40.0),
     hf_frac=0.25,
