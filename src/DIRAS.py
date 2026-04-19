@@ -2,12 +2,14 @@
 DIRAS (Dynamic Iterative Reweighted Autoregressive Spectral baseline correction algorithm)
 """
 import numpy as np
-from scipy.sparse import diags
+from scipy.sparse import diags, csc_matrix
 from scipy.sparse.linalg import spsolve
 from scipy.linalg import toeplitz
 from scipy.ndimage import gaussian_filter1d
 
 _EPS = 1e-12
+
+_DBASE_CACHE = {}
 
 # Helpers
 def _mad(x):
@@ -18,7 +20,7 @@ def _mad(x):
 
 def _smoothness_penalty(z):
     d2 = np.diff(np.asarray(z, float), n=2)
-    return float(np.sum(d2 * d2))
+    return float(np.dot(d2, d2))
 
 
 def _hf_start_index(n, frac):
@@ -29,6 +31,12 @@ def _gsmooth(x, sigma):
     return gaussian_filter1d(x, sigma=float(max(0.5, sigma)), mode="reflect")
 
 
+def _get_D_base(L):
+
+    if L not in _DBASE_CACHE:
+        D2 = diags([1.0, -2.0, 1.0], [0, -1, -2], shape=(L, L - 2), format="csc")
+        _DBASE_CACHE[L] = csc_matrix(D2 @ D2.T)
+    return _DBASE_CACHE[L]
 
 # Frequency-guided conditioning
 def _fft_power_ratio(x, hf_start_frac=0.25, eps=1e-12):
@@ -44,13 +52,11 @@ def _fft_power_ratio(x, hf_start_frac=0.25, eps=1e-12):
     k0 = _hf_start_index(len(power), hf_start_frac)
     return float(power[k0:].sum() / total)
 
-
 def _adaptive_sigma(hf, sigma_range=(2.0, 40.0), hf_range=(0.05, 0.50), power=1.0):
     lo, hi = hf_range
     s_lo, s_hi = sigma_range
     t = np.clip((hf - lo) / (hi - lo + 1e-15), 0.0, 1.0) ** power
     return float(s_lo + t * (s_hi - s_lo))
-
 
 # AR helpers
 def _yule_walker_ar(x, order=30, eps=1e-10):
@@ -68,8 +74,8 @@ def _yule_walker_ar(x, order=30, eps=1e-10):
     sigma2 = float(max(r[0] - a @ r[1:], eps))
     return a.astype(float), sigma2
 
+def _ar_hf_ratio(a, sigma2, nfreq=128, eps=1e-12, hf_start_frac=0.25):
 
-def _ar_hf_ratio(a, sigma2, nfreq=512, eps=1e-12, hf_start_frac=0.25):
     f = np.linspace(0, 0.5, nfreq, endpoint=True)
     H = np.ones_like(f, dtype=np.complex128)
 
@@ -81,8 +87,8 @@ def _ar_hf_ratio(a, sigma2, nfreq=512, eps=1e-12, hf_start_frac=0.25):
     k0 = _hf_start_index(len(psd), hf_start_frac)
     return float(psd[k0:].sum() / total)
 
-
 def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=(1.0, 5.0)):
+
     x = np.asarray(x, float).ravel()
 
     if x.size < 8:
@@ -100,7 +106,7 @@ def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=
 
     try:
         a, sigma2 = _yule_walker_ar(x, order=order, eps=eps * 1e-2)
-        hf_ratio = _ar_hf_ratio(a, sigma2, nfreq=512, eps=eps, hf_start_frac=0.25)
+        hf_ratio = _ar_hf_ratio(a, sigma2, nfreq=128, eps=eps, hf_start_frac=0.25)
     except Exception:
         hf_ratio = 0.15
 
@@ -111,9 +117,7 @@ def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=
     kernel = alpha * kernel + (1.0 - alpha)
     return np.clip(kernel, 0.0, 1.0)
 
-
 # Weight update
-
 def _update_weights(residual, kernel, omega, zeta, mu_neg, sig_neg,
                     w_floor, w_ceiling, eps):
     w_new = np.empty_like(residual, dtype=float)
@@ -139,6 +143,7 @@ def _update_weights(residual, kernel, omega, zeta, mu_neg, sig_neg,
 
     return np.clip(w_new, w_floor, w_ceiling)
 
+# DIRAS_v2
 def DIRAS_v2(
     y,
     lam=1e5,
@@ -147,8 +152,8 @@ def DIRAS_v2(
     hf_frac=0.25,
     hf_range=(0.05, 0.50),
     smooth_power=1.0,
-    max_iter=50,
-    ar_order=50,
+    max_iter=60,
+    ar_order=30,
     alpha_ar=0.7,
     kernel_ema=0.12,
     sigma_struct=6.0,
@@ -161,6 +166,7 @@ def DIRAS_v2(
     stop_weight=1e-3,
     patience=3,
     eps=1e-6,
+    kernel_update_every=2,   # safe speed trick
     return_debug=False,
 ):
     y = np.asarray(y, float).ravel()
@@ -169,7 +175,7 @@ def DIRAS_v2(
     if L < 8:
         baseline = np.zeros(L, float)
         if return_debug:
-            return baseline, {"note": "too_short", "lam_eff": lam}
+            return baseline, {"note": "too_short", "lam_eff": lam, "n_iter": 0}
         return baseline
 
     # internal conditioning
@@ -187,11 +193,11 @@ def DIRAS_v2(
         conditioning_strength = 0.0
         hf_measured = _fft_power_ratio(y, hf_start_frac=hf_frac)
 
-    D2 = diags([1.0, -2.0, 1.0], [0, -1, -2], shape=(L, L - 2))
-    D_base = D2 @ D2.T
+    D_base = _get_D_base(L)
 
     baseline_old = np.zeros(L, float)
 
+    # initial kernel
     y0 = _gsmooth(y_work, sigma_struct * 0.6)
     kernel = ar_model_kernel_psd(
         y0,
@@ -205,23 +211,30 @@ def DIRAS_v2(
     best_baseline = None
     best_obj = np.inf
     stable = 0
+    n_iter_done = 0
 
     dbg = {k: [] for k in ["lam_eff", "omega", "zeta", "bchg", "wchg", "obj"]}
 
-    for _ in range(int(max_iter)):
-        W = diags(w, 0)
+    for it in range(int(max_iter)):
+        n_iter_done = it + 1
+
+        # build sparse diagonal weight matrix
+        W = diags(w, 0, format="csc")
+
         baseline = spsolve(W + lam * D_base, w * y_work)
         residual = y_work - baseline
 
-        res_struct = _gsmooth(residual, sigma_struct)
-        k_new = ar_model_kernel_psd(
-            res_struct,
-            order=ar_order,
-            eps=eps,
-            alpha=alpha_ar,
-            sigma=sigma_struct,
-        )
-        kernel = np.clip((1.0 - kernel_ema) * kernel + kernel_ema * k_new, 0.0, 1.0)
+        # update kernel less frequently for speed
+        if (it % kernel_update_every) == 0:
+            res_struct = _gsmooth(residual, sigma_struct)
+            k_new = ar_model_kernel_psd(
+                res_struct,
+                order=ar_order,
+                eps=eps,
+                alpha=alpha_ar,
+                sigma=sigma_struct,
+            )
+            kernel = np.clip((1.0 - kernel_ema) * kernel + kernel_ema * k_new, 0.0, 1.0)
 
         neg = residual < 0
         if np.any(neg):
@@ -274,6 +287,7 @@ def DIRAS_v2(
             "conditioning_strength": conditioning_strength,
             "y_input": y,
             "y_internal": y_work,
+            "n_iter": n_iter_done,
             "diras_internals": dbg,
         }
 
