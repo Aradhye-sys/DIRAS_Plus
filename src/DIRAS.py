@@ -8,31 +8,24 @@ from scipy.linalg import toeplitz
 from scipy.ndimage import gaussian_filter1d
 
 _EPS = 1e-12
-
 _DBASE_CACHE = {}
 
-# Helpers
 def _mad(x):
     x = np.asarray(x, float).ravel()
     m = np.median(x)
     return 1.4826 * (np.median(np.abs(x - m)) + _EPS)
 
-
 def _smoothness_penalty(z):
     d2 = np.diff(np.asarray(z, float), n=2)
     return float(np.dot(d2, d2))
 
-
 def _hf_start_index(n, frac):
     return max(1, min(int(np.floor((1.0 - frac) * n)), n - 1))
-
 
 def _gsmooth(x, sigma):
     return gaussian_filter1d(x, sigma=float(max(0.5, sigma)), mode="reflect")
 
-
 def _get_D_base(L):
-
     if L not in _DBASE_CACHE:
         D2 = diags([1.0, -2.0, 1.0], [0, -1, -2], shape=(L, L - 2), format="csc")
         _DBASE_CACHE[L] = csc_matrix(D2 @ D2.T)
@@ -52,13 +45,14 @@ def _fft_power_ratio(x, hf_start_frac=0.25, eps=1e-12):
     k0 = _hf_start_index(len(power), hf_start_frac)
     return float(power[k0:].sum() / total)
 
+
 def _adaptive_sigma(hf, sigma_range=(2.0, 40.0), hf_range=(0.05, 0.50), power=1.0):
     lo, hi = hf_range
     s_lo, s_hi = sigma_range
     t = np.clip((hf - lo) / (hi - lo + 1e-15), 0.0, 1.0) ** power
     return float(s_lo + t * (s_hi - s_lo))
 
-# AR helpers
+# AR
 def _yule_walker_ar(x, order=30, eps=1e-10):
     x = np.asarray(x, float).ravel()
 
@@ -75,7 +69,6 @@ def _yule_walker_ar(x, order=30, eps=1e-10):
     return a.astype(float), sigma2
 
 def _ar_hf_ratio(a, sigma2, nfreq=128, eps=1e-12, hf_start_frac=0.25):
-
     f = np.linspace(0, 0.5, nfreq, endpoint=True)
     H = np.ones_like(f, dtype=np.complex128)
 
@@ -87,8 +80,15 @@ def _ar_hf_ratio(a, sigma2, nfreq=128, eps=1e-12, hf_start_frac=0.25):
     k0 = _hf_start_index(len(psd), hf_start_frac)
     return float(psd[k0:].sum() / total)
 
-def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=(1.0, 5.0)):
-
+# AR-informed structural kernel
+def ar_model_kernel_psd(
+    x,
+    order=50,
+    eps=1e-6,
+    alpha=0.7,
+    sigma=6.0,
+    gamma_clip=(1.0, 5.0),
+):
     x = np.asarray(x, float).ravel()
 
     if x.size < 8:
@@ -113,13 +113,22 @@ def ar_model_kernel_psd(x, order=50, eps=1e-6, alpha=0.7, sigma=6.0, gamma_clip=
     g0, g1 = gamma_clip
     gamma = float(np.clip(g0 + (g1 - g0) * (hf_ratio / (0.35 + _EPS)), g0, g1))
 
-    kernel = 1.0 - (peak01 ** gamma)
+    kernel = 1.0 - (peak01**gamma)
     kernel = alpha * kernel + (1.0 - alpha)
     return np.clip(kernel, 0.0, 1.0)
 
 # Weight update
-def _update_weights(residual, kernel, omega, zeta, mu_neg, sig_neg,
-                    w_floor, w_ceiling, eps):
+def _update_weights(
+    residual,
+    kernel,
+    omega,
+    zeta,
+    mu_neg,
+    sig_neg,
+    w_floor,
+    w_ceiling,
+    eps,
+):
     w_new = np.empty_like(residual, dtype=float)
 
     neg = residual < 0
@@ -143,11 +152,10 @@ def _update_weights(residual, kernel, omega, zeta, mu_neg, sig_neg,
 
     return np.clip(w_new, w_floor, w_ceiling)
 
-# DIRAS_v2
-def DIRAS_v2(
+# Frequency-Conditioned DIRAS
+def FC_DIRAS(
     y,
     lam=1e5,
-    use_fft_smoothing=True,
     sigma_range=(2.0, 40.0),
     hf_frac=0.25,
     hf_range=(0.05, 0.50),
@@ -166,75 +174,57 @@ def DIRAS_v2(
     stop_weight=1e-3,
     patience=3,
     eps=1e-6,
-    kernel_update_every=2,   # safe speed trick
-    return_debug=False,
+    kernel_update_every=2,
 ):
     y = np.asarray(y, float).ravel()
     L = y.size
 
     if L < 8:
-        baseline = np.zeros(L, float)
-        if return_debug:
-            return baseline, {"note": "too_short", "lam_eff": lam, "n_iter": 0}
-        return baseline
+        return np.zeros(L, float)
 
-    # internal conditioning
-    if use_fft_smoothing:
-        hf_measured = _fft_power_ratio(y, hf_start_frac=hf_frac)
-        conditioning_strength = _adaptive_sigma(
-            hf_measured,
-            sigma_range=sigma_range,
-            hf_range=hf_range,
-            power=smooth_power
-        )
-        y_work = _gsmooth(y, conditioning_strength)
-    else:
-        y_work = y.copy()
-        conditioning_strength = 0.0
-        hf_measured = _fft_power_ratio(y, hf_start_frac=hf_frac)
+    hf_measured = _fft_power_ratio(y, hf_start_frac=hf_frac)
+    conditioning_strength = _adaptive_sigma(
+        hf_measured,
+        sigma_range=sigma_range,
+        hf_range=hf_range,
+        power=smooth_power,
+    )
+    y_work = _gsmooth(y, conditioning_strength)
 
     D_base = _get_D_base(L)
 
-    baseline_old = np.zeros(L, float)
-
-    # initial kernel
-    y0 = _gsmooth(y_work, sigma_struct * 0.6)
     kernel = ar_model_kernel_psd(
-        y0,
+        y_work,
         order=ar_order,
         eps=eps,
         alpha=alpha_ar,
-        sigma=sigma_struct * 0.6,
+        sigma=sigma_struct,
     )
     w = np.clip(kernel, w_floor, w_ceiling)
 
+    baseline_old = np.zeros(L, float)
     best_baseline = None
     best_obj = np.inf
     stable = 0
-    n_iter_done = 0
-
-    dbg = {k: [] for k in ["lam_eff", "omega", "zeta", "bchg", "wchg", "obj"]}
 
     for it in range(int(max_iter)):
-        n_iter_done = it + 1
-
-        # build sparse diagonal weight matrix
         W = diags(w, 0, format="csc")
-
         baseline = spsolve(W + lam * D_base, w * y_work)
         residual = y_work - baseline
 
-        # update kernel less frequently for speed
         if (it % kernel_update_every) == 0:
-            res_struct = _gsmooth(residual, sigma_struct)
             k_new = ar_model_kernel_psd(
-                res_struct,
+                residual,
                 order=ar_order,
                 eps=eps,
                 alpha=alpha_ar,
                 sigma=sigma_struct,
             )
-            kernel = np.clip((1.0 - kernel_ema) * kernel + kernel_ema * k_new, 0.0, 1.0)
+            kernel = np.clip(
+                (1.0 - kernel_ema) * kernel + kernel_ema * k_new,
+                0.0,
+                1.0,
+            )
 
         neg = residual < 0
         if np.any(neg):
@@ -245,25 +235,28 @@ def DIRAS_v2(
             sig_neg = float(_mad(residual) + eps)
 
         w_new = _update_weights(
-            residual, kernel, omega, zeta,
-            mu_neg, sig_neg, w_floor, w_ceiling, eps
+            residual=residual,
+            kernel=kernel,
+            omega=omega,
+            zeta=zeta,
+            mu_neg=mu_neg,
+            sig_neg=sig_neg,
+            w_floor=w_floor,
+            w_ceiling=w_ceiling,
+            eps=eps,
         )
         w_damped = np.clip((1.0 - beta) * w + beta * w_new, w_floor, w_ceiling)
 
-        bchg = float(np.linalg.norm(baseline - baseline_old) / (np.linalg.norm(baseline) + eps))
+        bchg = float(
+            np.linalg.norm(baseline - baseline_old) / (np.linalg.norm(baseline) + eps)
+        )
         wchg = float(np.linalg.norm(w_damped - w) / (np.linalg.norm(w) + eps))
+
         obj = float(np.sum(w_damped * residual**2) + lam * _smoothness_penalty(baseline))
 
         if obj < best_obj:
             best_obj = obj
             best_baseline = baseline.copy()
-
-        dbg["lam_eff"].append(lam)
-        dbg["omega"].append(omega)
-        dbg["zeta"].append(zeta)
-        dbg["bchg"].append(bchg)
-        dbg["wchg"].append(wchg)
-        dbg["obj"].append(obj)
 
         if (bchg < stop_baseline) and (wchg < stop_weight):
             stable += 1
@@ -276,19 +269,6 @@ def DIRAS_v2(
         w = w_damped
 
     if best_baseline is None:
-        best_baseline = baseline_old
-
-    if return_debug:
-        dbg["weights"] = w
-        dbg["kernel"] = kernel
-        dbg["residual"] = y_work - best_baseline
-        return best_baseline, {
-            "hf_measured": hf_measured,
-            "conditioning_strength": conditioning_strength,
-            "y_input": y,
-            "y_internal": y_work,
-            "n_iter": n_iter_done,
-            "diras_internals": dbg,
-        }
+        best_baseline = baseline_old.copy()
 
     return best_baseline
