@@ -166,7 +166,29 @@ We welcome contributions! Please feel free to:
 - Submit pull requests
 - Improve documentation
 
+## Citation
 
+If you use this repository, the FC-DIRAS, or DIRAS+ in your research, please cite our work.
+
+### DIRAS Article
+
+Prasad Aradhye, Souparna Mandal, Robert D. Gray, and Colin J. Campbell.  
+**Adaptive Physics-Aware Raman Baseline Correction Using ML-Guided Regularization (DIRAS+)**  
+*Analytical Chemistry* (2025).  
+DOI: https://doi.org/10.1021/acs.analchem.5c05185
+
+### Citation Note
+
+This repository includes implementations of:
+
+- FC-DIRAS (Frequency-Conditioned DIRAS)
+- DIRAS+ (ML-guided adaptive regularization)
+
+If this code, methodology, or the associated publication contributes to your work, please cite the article above.
+
+Citations help support continued development, validation, and dissemination of robust Raman baseline correction methods for the community.
+
+Thank you for your support.
 ---
 
 **Note**: This is research software. Please ensure proper validation for your specific use case.
